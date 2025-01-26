@@ -9,8 +9,6 @@ a basic dll injector
 6. The injector will find the process and inject the DLL
 This injector has many issues as it was poorly written (made about 1.5 years ago)
 
-![image](https://github.com/1Softworks/Injector/assets/105064040/4589e633-afb7-4719-9de2-0ab270f69c6b)
-
 # Demo
 ![0OFEnTFK7i](https://github.com/user-attachments/assets/8cd33fee-aa85-4948-9f70-645bcca4b857)
 
