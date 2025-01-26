@@ -2,115 +2,112 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <iostream>
-#include <vector>
 #include <string>
-#include <fstream>
-#include <ctime>
-#include <chrono>
-#include <thread>
-#include <atomic>
-#include <mutex>
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 
-void whatcolorisyourbugatti(WORD color) {
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(hConsole, color);
+void print(const char* msg, WORD c = 7) {
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), c);
+    printf("%s", msg);
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
 }
 
-void print_time(const char* message, WORD color = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE) {
-    time_t now = time(0);
-    tm timeinfo;
-    localtime_s(&timeinfo, &now);
-    char timeStr[9];
-    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+DWORD get_pid(const wchar_t* name) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
 
-    whatcolorisyourbugatti(FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    printf("[%s] ", timeStr);
-    whatcolorisyourbugatti(color);
-    printf("%s\n", message);
-}
+    PROCESSENTRY32W pe32;
+    pe32.dwSize = sizeof(pe32);
+    DWORD pid = 0;
 
-DWORD pid(const wchar_t* processName) {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        return 0;
+    if (Process32FirstW(snap, &pe32)) {
+        do {
+            if (_wcsicmp(pe32.szExeFile, name) == 0) {
+                pid = pe32.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe32));
     }
 
-    PROCESSENTRY32W processEntry;
-    processEntry.dwSize = sizeof(PROCESSENTRY32W);
-
-    if (!Process32FirstW(snapshot, &processEntry)) {
-        CloseHandle(snapshot);
-        return 0;
-    }
-
-    do {
-        if (wcscmp(processEntry.szExeFile, processName) == 0) {
-            DWORD processId = processEntry.th32ProcessID;
-            CloseHandle(snapshot);
-            return processId;
-        }
-    } while (Process32NextW(snapshot, &processEntry));
-
-    CloseHandle(snapshot);
-    return 0;
+    CloseHandle(snap);
+    return pid;
 }
 
-bool inject(DWORD processId, const char* dllPath) {
-    HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
-    if (!process) {
+bool inject(DWORD pid, const char* dll) {
+    HANDLE proc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    if (!proc) return false;
+
+    SIZE_T len = strlen(dll) + 1;
+    LPVOID mem = VirtualAllocEx(proc, NULL, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!mem) {
+        CloseHandle(proc);
         return false;
     }
 
-    LPVOID allocatedMemory = VirtualAllocEx(process, NULL, strlen(dllPath) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!allocatedMemory) {
-        CloseHandle(process);
+    if (!WriteProcessMemory(proc, mem, dll, len, NULL)) {
+        VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
+        CloseHandle(proc);
         return false;
     }
 
-    if (!WriteProcessMemory(process, allocatedMemory, dllPath, strlen(dllPath) + 1, NULL)) {
-        VirtualFreeEx(process, allocatedMemory, 0, MEM_RELEASE);
-        CloseHandle(process);
-        return false;
-    }
-
-    HANDLE thread = CreateRemoteThread(process, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryA, allocatedMemory, 0, NULL);
+    HANDLE thread = CreateRemoteThread(proc, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryA, mem, 0, NULL);
     if (!thread) {
-        VirtualFreeEx(process, allocatedMemory, 0, MEM_RELEASE);
-        CloseHandle(process);
+        VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
+        CloseHandle(proc);
         return false;
     }
 
     WaitForSingleObject(thread, INFINITE);
-
-    VirtualFreeEx(process, allocatedMemory, 0, MEM_RELEASE);
+    VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
     CloseHandle(thread);
-    CloseHandle(process);
-
+    CloseHandle(proc);
     return true;
 }
 
-
 int main() {
-    char dllPath[MAX_PATH];
-    // Replace dll.dll with your dll
-    GetFullPathNameA("dll.dll", MAX_PATH, dllPath, NULL);
-    // Put the target process here
-    const wchar_t* targetProcessName = L"example.exe";
-    DWORD processId = pid(targetProcessName);
-    print_time("Found process");
-    print_time("Injected DLL");
-    if (processId == 0) {
-        printf("Process Not Found");
-        Sleep(3000);
+    SetConsoleTitleA("injector [https://github.com/1Softworks/Injector]");
+
+    char process[MAX_PATH];
+    char dll_path[MAX_PATH];
+    wchar_t wprocess[MAX_PATH];
+
+    print("enter process name: ", 11);
+    scanf_s("%s", process, (unsigned)sizeof(process));
+    MultiByteToWideChar(CP_UTF8, 0, process, -1, wprocess, MAX_PATH);
+
+    OPENFILENAMEA ofn = { 0 };
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFilter = "dll files\0*.dll\0all files\0*.*\0";
+    ofn.lpstrFile = dll_path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+    ofn.lpstrDefExt = "dll";
+    dll_path[0] = '\0';
+
+    print("\nselect dll file...\n", 11);
+    if (!GetOpenFileNameA(&ofn)) {
+        print("no dll selected\n", 12);
+        Sleep(2000);
         return 1;
     }
 
-    if (!inject(processId, dllPath)) {
-        printf("error");
+    print("\nwaiting for process...\n", 11);
+    DWORD pid = 0;
+    while (!pid) {
+        pid = get_pid(wprocess);
+        Sleep(100);
+    }
+
+    print("process found! injecting...\n", 10);
+
+    if (!inject(pid, dll_path)) {
+        print("injection failed\n", 12);
+        Sleep(2000);
         return 1;
     }
-     
 
-    Sleep(4000);
+    print("injection successful!\n", 10);
+    Sleep(2000);
     return 0;
 }
